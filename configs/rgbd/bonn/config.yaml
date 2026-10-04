@@ -137,6 +137,16 @@ Uncertainty:
   shadow_mode: true
   log_keyframe_reasons: true
 
+  # M3-A independent source-discovery audit. Disabled by default and
+  # behavior-neutral: spatial blocks are deleted only in shadow pose refits.
+  m3_jackknife_audit: false
+  m3_jackknife_grid_rows: 4
+  m3_jackknife_grid_cols: 4
+  m3_jackknife_min_train_pixels: 1000
+  m3_jackknife_min_removed_pixels: 50
+  m3_jackknife_robust_iters: 30
+  m3_jackknife_frame_range: null
+
   # M2-A absolute pose covariance propagation. Shadow-only by default.
   enable_m2a: true
   m2a_save_diagnostics: true
