@@ -1,0 +1,23 @@
+# M3-A transition-neighborhood audit: Bonn placing_box3.
+# Behavior-neutral spatial delete-block pose-instability diagnostics.
+inherit_from: "configs/rgbd/bonn/config.yaml"
+
+Dataset:
+  dataset_path: "datasets/bonn/rgbd_bonn_placing_nonobstructing_box3"
+
+Training:
+  single_thread: true
+  dystart: 348
+
+Uncertainty:
+  enable_m1: true
+  enable_m2a: false
+  enable_m2a2: false
+  m1_mapping_weighting: false
+  m3_jackknife_audit: true
+  m3_jackknife_grid_rows: 4
+  m3_jackknife_grid_cols: 4
+  m3_jackknife_min_train_pixels: 1000
+  m3_jackknife_min_removed_pixels: 50
+  m3_jackknife_robust_iters: 30
+  m3_jackknife_frame_range: [318, 378]
