@@ -35,6 +35,7 @@ from utils.m2_uncertainty import (
     relative_parameter_cov_to_right,
 )
 from utils.m1_mapping_uncertainty import M1MappingSignal
+from utils.m3_pose_jackknife import M3PoseJackknifeAudit
 from utils.m2_tracking_uncertainty import (
     apply_tracking_diag6_calibration,
     build_tracking_residual_context,
@@ -287,6 +288,40 @@ class FrontEnd(mp.Process):
                     f"{self.m1_mapping_signal.block_size}, but configured sizes are "
                     f"{self.m1_cluster_block_sizes}"
                 )
+
+        # M3-A: independent estimator-instability source discovery.
+        # Diagnostic only: delete spatial blocks, re-run the baseline robust
+        # pose refit, and record how much the estimate changes.
+        self.m3_jackknife_audit = bool(
+            unc_cfg.get("m3_jackknife_audit", False)
+        )
+        self.m3_jackknife_frame_range = unc_cfg.get(
+            "m3_jackknife_frame_range", None
+        )
+        if self.m3_jackknife_frame_range is not None:
+            if len(self.m3_jackknife_frame_range) != 2:
+                raise ValueError("m3_jackknife_frame_range must be [lo, hi]")
+            self.m3_jackknife_frame_range = [
+                int(v) for v in self.m3_jackknife_frame_range
+            ]
+        self.m3_pose_jackknife = None
+        if self.m3_jackknife_audit:
+            if not self.m1_uncertainty:
+                raise ValueError(
+                    "m3_jackknife_audit currently requires enable_m1=true so "
+                    "the same run records the matched FB baseline diagnostics"
+                )
+            self.m3_pose_jackknife = M3PoseJackknifeAudit(
+                grid_rows=int(unc_cfg.get("m3_jackknife_grid_rows", 4)),
+                grid_cols=int(unc_cfg.get("m3_jackknife_grid_cols", 4)),
+                min_train_pixels=int(
+                    unc_cfg.get("m3_jackknife_min_train_pixels", 1000)
+                ),
+                min_removed_pixels=int(
+                    unc_cfg.get("m3_jackknife_min_removed_pixels", 50)
+                ),
+                robust_iters=int(unc_cfg.get("m3_jackknife_robust_iters", 30)),
+            )
 
         # M2-A: shadow-only propagation of absolute camera-pose uncertainty.
         # It does not alter the baseline pose mean, losses, keyframes, mapping,
@@ -816,6 +851,23 @@ class FrontEnd(mp.Process):
                         viewpoint.m1_mapping_valid = True
                 else:
                     xi = xi_baseline
+
+                if self.m3_jackknife_audit:
+                    run_m3 = True
+                    if self.m3_jackknife_frame_range is not None:
+                        lo, hi = self.m3_jackknife_frame_range
+                        run_m3 = lo <= int(viewpoint.uid) <= hi
+                    if run_m3:
+                        self.m3_pose_jackknife.evaluate_and_save(
+                            frame=viewpoint.uid,
+                            depth=depth_ds,
+                            flow_px=flow_px_ds,
+                            K=Kds,
+                            static_mask=static_inliers_ds,
+                            xi_full=xi_baseline,
+                            fit_fn=fit_twist_weighted,
+                            save_dir=self.config["Results"]["save_dir"],
+                        )
 
                 rigid_flow_px = predict_rigid_flow_px(depth_ds, Kds, xi)
                 rigid_flow_out = pixels_to_flow_units(rigid_flow_px, H, W, mode='grid')
