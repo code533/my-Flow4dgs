@@ -11,7 +11,11 @@ Training:
 
 Uncertainty:
   enable_m1: true
-  enable_m2a: false
+  # M2-A remains shadow-only here solely to save T_final/T_motion_prior for
+  # the matched relative-pose audit. No calibrated absolute covariance or
+  # tracking posterior is used by M3-A.
+  enable_m2a: true
+  m2a_use_diag_calibration: false
   enable_m2a2: false
   m1_mapping_weighting: false
   m3_jackknife_audit: true
