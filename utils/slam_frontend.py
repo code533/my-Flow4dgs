@@ -37,6 +37,7 @@ from utils.m2_uncertainty import (
 from utils.m1_mapping_uncertainty import M1MappingSignal
 from utils.m3_pose_jackknife import M3PoseJackknifeAudit
 from utils.m3b_flow_perturbation import M3BFlowPerturbationAudit
+from utils.m3c_temporal_cycle import M3CTemporalCycleAudit
 from utils.m2_tracking_uncertainty import (
     apply_tracking_diag6_calibration,
     build_tracking_residual_context,
@@ -343,6 +344,28 @@ class FrontEnd(mp.Process):
                 )
             self.m3b_flow_audit = M3BFlowPerturbationAudit(
                 min_pixels=int(unc_cfg.get("m3b_min_pixels", 500))
+            )
+
+        # M3-C: three-frame temporal-cycle source discovery.
+        # Shadow-only: two additional current-direction RAFT evaluations are
+        # performed on audited frames; the baseline t->t-1 flow is unchanged.
+        self.m3c_temporal_cycle_audit = bool(
+            unc_cfg.get("m3c_temporal_cycle_audit", False)
+        )
+        self.m3c_frame_range = unc_cfg.get("m3c_frame_range", None)
+        if self.m3c_frame_range is not None:
+            if len(self.m3c_frame_range) != 2:
+                raise ValueError("m3c_frame_range must be [lo, hi]")
+            self.m3c_frame_range = [int(v) for v in self.m3c_frame_range]
+        self.m3c_cycle_audit = None
+        if self.m3c_temporal_cycle_audit:
+            if not self.m1_uncertainty:
+                raise ValueError(
+                    "m3c_temporal_cycle_audit currently requires enable_m1=true "
+                    "so the matched FB diagnostic is saved in the same run"
+                )
+            self.m3c_cycle_audit = M3CTemporalCycleAudit(
+                min_pixels=int(unc_cfg.get("m3c_min_pixels", 500))
             )
 
         # M2-A: shadow-only propagation of absolute camera-pose uncertainty.
@@ -848,6 +871,42 @@ class FrontEnd(mp.Process):
                             self.m3b_flow_audit.evaluate_and_save(
                                 frame=viewpoint.uid,
                                 flow_ensemble_px=ensemble_px,
+                                static_mask=static_prob_mask,
+                                save_dir=self.config["Results"]["save_dir"],
+                            )
+
+                    if self.m3c_temporal_cycle_audit:
+                        run_m3c = True
+                        if self.m3c_frame_range is not None:
+                            lo, hi = self.m3c_frame_range
+                            run_m3c = lo <= int(viewpoint.uid) <= hi
+                        if run_m3c and int(viewpoint.uid) >= 2 * self.use_every_n_frames:
+                            prevprev = self.cameras[
+                                cur_frame_idx - 2 * self.use_every_n_frames
+                            ]
+                            flow_tm1_to_tm2 = prev.generate_flow(
+                                prev.original_image.cuda(),
+                                prevprev.original_image.cuda(),
+                                tracking=True,
+                            )
+                            flow_t_to_tm2 = viewpoint.generate_flow(
+                                viewpoint.original_image.cuda(),
+                                prevprev.original_image.cuda(),
+                                tracking=True,
+                            )
+                            flow_tm1_to_tm2_px = flow_to_pixels(
+                                flow_tm1_to_tm2.permute(2, 0, 1),
+                                H, W, mode="grid"
+                            )
+                            flow_t_to_tm2_px = flow_to_pixels(
+                                flow_t_to_tm2.permute(2, 0, 1),
+                                H, W, mode="grid"
+                            )
+                            self.m3c_cycle_audit.evaluate_and_save(
+                                frame=viewpoint.uid,
+                                flow_t_to_tm1_px=flow_px_ds,
+                                flow_tm1_to_tm2_px=flow_tm1_to_tm2_px,
+                                flow_t_to_tm2_px=flow_t_to_tm2_px,
                                 static_mask=static_prob_mask,
                                 save_dir=self.config["Results"]["save_dir"],
                             )
