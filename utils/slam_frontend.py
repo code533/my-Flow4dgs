@@ -36,6 +36,7 @@ from utils.m2_uncertainty import (
 )
 from utils.m1_mapping_uncertainty import M1MappingSignal
 from utils.m3_pose_jackknife import M3PoseJackknifeAudit
+from utils.m3b_flow_perturbation import M3BFlowPerturbationAudit
 from utils.m2_tracking_uncertainty import (
     apply_tracking_diag6_calibration,
     build_tracking_residual_context,
@@ -321,6 +322,27 @@ class FrontEnd(mp.Process):
                     unc_cfg.get("m3_jackknife_min_removed_pixels", 50)
                 ),
                 robust_iters=int(unc_cfg.get("m3_jackknife_robust_iters", 30)),
+            )
+
+        # M3-B: appearance-perturbation flow-disagreement source discovery.
+        # Shadow-only. The ordinary identity RAFT flow remains the SLAM input.
+        self.m3b_flow_perturbation_audit = bool(
+            unc_cfg.get("m3b_flow_perturbation_audit", False)
+        )
+        self.m3b_frame_range = unc_cfg.get("m3b_frame_range", None)
+        if self.m3b_frame_range is not None:
+            if len(self.m3b_frame_range) != 2:
+                raise ValueError("m3b_frame_range must be [lo, hi]")
+            self.m3b_frame_range = [int(v) for v in self.m3b_frame_range]
+        self.m3b_flow_audit = None
+        if self.m3b_flow_perturbation_audit:
+            if not self.m1_uncertainty:
+                raise ValueError(
+                    "m3b_flow_perturbation_audit currently requires enable_m1=true "
+                    "so the matched FB diagnostic is saved in the same run"
+                )
+            self.m3b_flow_audit = M3BFlowPerturbationAudit(
+                min_pixels=int(unc_cfg.get("m3b_min_pixels", 500))
             )
 
         # M2-A: shadow-only propagation of absolute camera-pose uncertainty.
@@ -795,6 +817,40 @@ class FrontEnd(mp.Process):
                     )
 
                     static_prob_mask = static_inliers_ds & fb_valid
+
+                    if self.m3b_flow_perturbation_audit:
+                        run_m3b = True
+                        if self.m3b_frame_range is not None:
+                            lo, hi = self.m3b_frame_range
+                            run_m3b = lo <= int(viewpoint.uid) <= hi
+                        if run_m3b:
+                            variants = [
+                                ("gamma_0p80", "gamma", 0.80),
+                                ("gamma_1p25", "gamma", 1.25),
+                                ("contrast_0p80", "contrast", 0.80),
+                                ("contrast_1p25", "contrast", 1.25),
+                            ]
+                            perturbed = viewpoint.generate_flow_perturbed(
+                                viewpoint.original_image.cuda(),
+                                prev.original_image.cuda(),
+                                variants=variants,
+                            )
+                            ensemble_px = {
+                                "identity": flow_px_ds,
+                                **{
+                                    name: flow_to_pixels(
+                                        flow.permute(2, 0, 1),
+                                        H, W, mode="grid"
+                                    )
+                                    for name, flow in perturbed.items()
+                                },
+                            }
+                            self.m3b_flow_audit.evaluate_and_save(
+                                frame=viewpoint.uid,
+                                flow_ensemble_px=ensemble_px,
+                                static_mask=static_prob_mask,
+                                save_dir=self.config["Results"]["save_dir"],
+                            )
 
                     # M1 Version 1 uses a deliberately simple depth-noise
                     # model. It can later be replaced by a calibrated RGB-D
