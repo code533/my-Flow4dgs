@@ -463,6 +463,56 @@ class Camera(nn.Module):
 
         return selected_keyframe_list
         
+    @torch.no_grad()
+    def generate_flow_perturbed(self, image, image_last, variants=None):
+        """Return current->previous RAFT flows under matched photometric transforms.
+
+        The transforms are applied identically to both frames and therefore do
+        not alter scene geometry.  This function is diagnostic-only and never
+        writes Camera.flow / Camera.flow_back caches.
+
+        Returns:
+            dict[name] = normalized grid flow [H,W,2], current->previous.
+        """
+        if variants is None:
+            variants = [
+                ("identity", "identity", 1.0),
+                ("gamma_0p80", "gamma", 0.80),
+                ("gamma_1p25", "gamma", 1.25),
+                ("contrast_0p80", "contrast", 0.80),
+                ("contrast_1p25", "contrast", 1.25),
+            ]
+
+        def transform(x, kind, value):
+            y = x.detach().clone().clamp(0.0, 1.0)
+            if kind == "identity":
+                return y
+            if kind == "gamma":
+                return y.clamp_min(1.0e-6).pow(float(value))
+            if kind == "contrast":
+                return ((y - 0.5) * float(value) + 0.5).clamp(0.0, 1.0)
+            raise ValueError(f"Unknown M3-B photometric transform {kind!r}")
+
+        out = {}
+        for name, kind, value in variants:
+            cur = transform(image, kind, value) * 255.0
+            prev = transform(image_last, kind, value) * 255.0
+            cur, prev = cur[None], prev[None]
+
+            padder = InputPadder(prev.shape)
+            prev_pad, cur_pad = padder.pad(prev, cur)
+            _, flow_bwd = self.model(
+                cur_pad, prev_pad, iters=20, test_mode=True
+            )
+            flow_bwd = padder.unpad(flow_bwd[0]).permute(1, 2, 0)
+            scale = torch.tensor(
+                flow_bwd.shape[:2][::-1],
+                dtype=flow_bwd.dtype,
+                device=flow_bwd.device,
+            )
+            out[name] = flow_bwd / scale * 2.0
+        return out
+
     def generate_flow(self, image, image_last, tracking=False, ds=1, return_full=False, cache=True):
         if not tracking and cache:
             if self.flow is not None:
