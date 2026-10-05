@@ -1,0 +1,21 @@
+# M3-C transition-neighborhood audit: Bonn placing_box2.
+inherit_from: "configs/rgbd/bonn/config.yaml"
+
+Dataset:
+  dataset_path: "datasets/bonn/rgbd_bonn_placing_nonobstructing_box2"
+
+Training:
+  single_thread: true
+  dystart: 262
+
+Uncertainty:
+  enable_m1: true
+  enable_m2a: true
+  m2a_use_diag_calibration: false
+  enable_m2a2: false
+  m1_mapping_weighting: false
+  m3_jackknife_audit: false
+  m3b_flow_perturbation_audit: false
+  m3c_temporal_cycle_audit: true
+  m3c_min_pixels: 500
+  m3c_frame_range: [232, 292]
