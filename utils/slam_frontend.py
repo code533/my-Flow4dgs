@@ -38,6 +38,7 @@ from utils.m1_mapping_uncertainty import M1MappingSignal
 from utils.m3_pose_jackknife import M3PoseJackknifeAudit
 from utils.m3b_flow_perturbation import M3BFlowPerturbationAudit
 from utils.m3c_temporal_cycle import M3CTemporalCycleAudit
+from utils.m5_flow_reliability import M5FlowReliability
 from utils.m2_tracking_uncertainty import (
     apply_tracking_diag6_calibration,
     build_tracking_residual_context,
@@ -366,6 +367,36 @@ class FrontEnd(mp.Process):
                 )
             self.m3c_cycle_audit = M3CTemporalCycleAudit(
                 min_pixels=int(unc_cfg.get("m3c_min_pixels", 500))
+            )
+
+        # M5-A: confirmed direct-flow reliability source.
+        # Score computation can run in shadow mode without changing mapping.
+        self.m5_flow_reliability_enable = bool(
+            unc_cfg.get("m5_flow_reliability_enable", False)
+        )
+        self.m5_mapping_weighting = bool(
+            unc_cfg.get("m5_mapping_weighting", False)
+        )
+        if self.m5_mapping_weighting and not self.m5_flow_reliability_enable:
+            raise ValueError(
+                "m5_mapping_weighting requires m5_flow_reliability_enable=true"
+            )
+        self.m5_flow_reliability = None
+        if self.m5_flow_reliability_enable:
+            if not self.m1_uncertainty:
+                raise ValueError(
+                    "m5_flow_reliability_enable requires enable_m1=true so "
+                    "the exact M4-B static+FB-valid support is available"
+                )
+            ref_file = unc_cfg.get("m5_flow_reference_file")
+            if not ref_file:
+                raise ValueError(
+                    "m5_flow_reliability_enable requires m5_flow_reference_file"
+                )
+            self.m5_flow_reliability = M5FlowReliability(
+                reference_file=ref_file,
+                eps=float(unc_cfg.get("m5_confidence_eps", 1.0e-3)),
+                min_pixels=int(unc_cfg.get("m5_min_pixels", 500)),
             )
 
         # M2-A: shadow-only propagation of absolute camera-pose uncertainty.
@@ -931,6 +962,64 @@ class FrontEnd(mp.Process):
                                 static_mask=static_prob_mask,
                                 save_dir=self.config["Results"]["save_dir"],
                             )
+
+                    if self.m5_flow_reliability_enable:
+                        if int(viewpoint.uid) >= 2 * self.use_every_n_frames:
+                            older_idx = (
+                                cur_frame_idx - 2 * self.use_every_n_frames
+                            )
+                            older_sample = self.dataset[older_idx]
+                            older_image = older_sample[0]
+                            if older_image is None:
+                                raise RuntimeError(
+                                    f"M5-A could not reload RGB for frame "
+                                    f"{older_idx} from dataset"
+                                )
+                            older_image = older_image.to(
+                                device=viewpoint.original_image.device,
+                                dtype=viewpoint.original_image.dtype,
+                            )
+
+                            flow_tm1_to_tm2 = viewpoint.generate_flow(
+                                prev.original_image.cuda(),
+                                older_image,
+                                tracking=True,
+                            )
+                            flow_t_to_tm2 = viewpoint.generate_flow(
+                                viewpoint.original_image.cuda(),
+                                older_image,
+                                tracking=True,
+                            )
+                            flow_tm1_to_tm2_px = flow_to_pixels(
+                                flow_tm1_to_tm2.permute(2, 0, 1),
+                                H, W, mode="grid"
+                            )
+                            flow_t_to_tm2_px = flow_to_pixels(
+                                flow_t_to_tm2.permute(2, 0, 1),
+                                H, W, mode="grid"
+                            )
+                            m5 = self.m5_flow_reliability.evaluate(
+                                flow_t_to_tm1_px=flow_px_ds,
+                                flow_tm1_to_tm2_px=flow_tm1_to_tm2_px,
+                                flow_t_to_tm2_px=flow_t_to_tm2_px,
+                                static_mask=static_prob_mask,
+                            )
+                            viewpoint.m5_mapping_confidence = float(
+                                m5["confidence"]
+                            )
+                            viewpoint.m5_mapping_direct_flow_px = (
+                                m5["direct_flow_median_px"]
+                            )
+                            viewpoint.m5_mapping_ecdf = m5["training_ecdf"]
+                            viewpoint.m5_mapping_valid = bool(m5["valid"])
+                            self.m5_flow_reliability.save(
+                                m5,
+                                frame=viewpoint.uid,
+                                save_dir=self.config["Results"]["save_dir"],
+                            )
+                        else:
+                            viewpoint.m5_mapping_confidence = 1.0
+                            viewpoint.m5_mapping_valid = False
 
                     # M1 Version 1 uses a deliberately simple depth-noise
                     # model. It can later be replaced by a calibrated RGB-D
