@@ -1139,11 +1139,12 @@ class BackEnd(mp.Process):
 
         if mapping_source is not None:
             confidences = []
+            neutral_conf = 0.5 if mapping_source == "M5" else 1.0
             for vp in self.viewpoint_stack:
-                conf = float(getattr(vp, attr_conf, 1.0))
+                conf = float(getattr(vp, attr_conf, neutral_conf))
                 valid = bool(getattr(vp, attr_valid, False))
                 if (not valid) or (not np.isfinite(conf)) or conf <= 0.0:
-                    conf = 1.0
+                    conf = neutral_conf
                 confidences.append(conf)
             rgbd_mapping_weights = normalized_window_weights(
                 confidences,
