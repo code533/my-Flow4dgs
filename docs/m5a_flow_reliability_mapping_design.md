@@ -150,9 +150,15 @@ Baseline vs shadow is a behavior-neutrality / runtime check.
 
 ## 6. Missing-score rule
 
-Frames t < 2 or frames with invalid M5 support receive neutral confidence:
+Frames t < 2 or frames with invalid M5 support receive the training-median
+neutral confidence:
 
-    c = 1.
+    c = 0.5.
+
+This is the neutral value on the frozen ECDF confidence scale because the
+training median has q approximately 0.5 and therefore c approximately 0.5.
+Using c=1 would incorrectly make missing frames look maximally reliable after
+window normalization.
 
 No previous/future score is copied forward.
 
