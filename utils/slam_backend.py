@@ -787,6 +787,16 @@ class BackEnd(mp.Process):
         self.m1_mapping_clip_max = float(unc_cfg.get("m1_mapping_clip_max", 4.0))
         self.m1_mapping_log_every = int(unc_cfg.get("m1_mapping_log_every", 50))
         self.m1_mapping_call_count = 0
+
+        self.m5_mapping_weighting = bool(unc_cfg.get("m5_mapping_weighting", False))
+        self.m5_mapping_clip_min = float(unc_cfg.get("m5_mapping_clip_min", 0.25))
+        self.m5_mapping_clip_max = float(unc_cfg.get("m5_mapping_clip_max", 4.0))
+        self.m5_mapping_log_every = int(unc_cfg.get("m5_mapping_log_every", 50))
+        self.m5_mapping_call_count = 0
+        if self.m1_mapping_weighting and self.m5_mapping_weighting:
+            raise ValueError(
+                "M1 and M5 mapping weighting cannot be enabled simultaneously"
+            )
         self.gaussians = None
         self.pipeline_params = None
         self.opt_params = None
@@ -1108,31 +1118,51 @@ class BackEnd(mp.Process):
         
         self.viewpoint_stack = [self.viewpoints[kf_idx] for kf_idx in key_opt]
 
-        # Normalize M1 confidence over the actual RGB-D mapping viewpoints.
-        # Missing/invalid confidence (including frame 0) is neutral. Only the
-        # per-view RGB-D mapping term is weighted; flow/mask/regularizers keep
-        # their baseline coefficients.
+        # Normalize the selected reliability confidence over the actual RGB-D
+        # mapping viewpoints. Missing/invalid scores (including early frames)
+        # are neutral. Only per-view RGB-D mapping terms are weighted;
+        # flow/mask/regularizers keep baseline coefficients.
         rgbd_mapping_weights = [1.0] * len(self.viewpoint_stack)
+        mapping_source = None
         if self.m1_mapping_weighting:
+            mapping_source = "M1"
+            attr_conf = "m1_mapping_confidence"
+            attr_valid = "m1_mapping_valid"
+            clip_min = self.m1_mapping_clip_min
+            clip_max = self.m1_mapping_clip_max
+        elif self.m5_mapping_weighting:
+            mapping_source = "M5"
+            attr_conf = "m5_mapping_confidence"
+            attr_valid = "m5_mapping_valid"
+            clip_min = self.m5_mapping_clip_min
+            clip_max = self.m5_mapping_clip_max
+
+        if mapping_source is not None:
             confidences = []
             for vp in self.viewpoint_stack:
-                conf = float(getattr(vp, "m1_mapping_confidence", 1.0))
-                valid = bool(getattr(vp, "m1_mapping_valid", False))
+                conf = float(getattr(vp, attr_conf, 1.0))
+                valid = bool(getattr(vp, attr_valid, False))
                 if (not valid) or (not np.isfinite(conf)) or conf <= 0.0:
                     conf = 1.0
                 confidences.append(conf)
             rgbd_mapping_weights = normalized_window_weights(
                 confidences,
-                clip_min=self.m1_mapping_clip_min,
-                clip_max=self.m1_mapping_clip_max,
+                clip_min=clip_min,
+                clip_max=clip_max,
             )
-            self.m1_mapping_call_count += 1
-            if (
-                self.m1_mapping_log_every > 0
-                and self.m1_mapping_call_count % self.m1_mapping_log_every == 0
-            ):
+
+            if mapping_source == "M1":
+                self.m1_mapping_call_count += 1
+                call_count = self.m1_mapping_call_count
+                log_every = self.m1_mapping_log_every
+            else:
+                self.m5_mapping_call_count += 1
+                call_count = self.m5_mapping_call_count
+                log_every = self.m5_mapping_log_every
+
+            if log_every > 0 and call_count % log_every == 0:
                 Log(
-                    "M1 RGB-D weights "
+                    f"{mapping_source} RGB-D weights "
                     + ", ".join(
                         f"{vp.uid}:{w:.3f}"
                         for vp, w in zip(self.viewpoint_stack, rgbd_mapping_weights)
