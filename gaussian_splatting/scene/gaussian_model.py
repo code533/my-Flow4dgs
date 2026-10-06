@@ -537,11 +537,55 @@ class GaussianModel:
 
         if new_xyz.shape[0] == 0:
             print(
-                "[BonnBaselineAudit] empty point cloud before CUDA KNN "
+                "[BonnBaselineAudit] empty point cloud before CUDA KNN; "
+                "skipping this Gaussian insertion "
                 f"uid={getattr(cam, 'uid', None)} init={bool(init)} "
                 f"new_mask={new_mask is not None} "
                 f"depth_valid={int((np.isfinite(depth_m) & (depth_m > 0.0)).sum())} "
                 f"downsample_factor={downsample_factor}"
+            )
+
+            # distCUDA2 cannot launch on an empty [0,3] point cloud.  Treat
+            # zero retained points as a valid no-op insertion instead of
+            # changing the sampling policy or fabricating a point.  The caller
+            # (extend_from_pcd_seq) already skips extend_from_pcd when N == 0.
+            #
+            # Keep tensor shapes identical to the non-empty path so callers do
+            # not need special cases beyond the existing N > 0 check.
+            fused_point_cloud = torch.empty(
+                (0, 3), dtype=torch.float32, device="cuda"
+            )
+            features = torch.empty(
+                (0, 3, (self.max_sh_degree + 1) ** 2),
+                dtype=torch.float32,
+                device="cuda",
+            )
+            scale_dim = 1 if self.isotropic else 3
+            scales = torch.empty(
+                (0, scale_dim), dtype=torch.float32, device="cuda"
+            )
+            rots = torch.empty(
+                (0, 4), dtype=torch.float32, device="cuda"
+            )
+            opacities = torch.empty(
+                (0, 1), dtype=torch.float32, device="cuda"
+            )
+            motion_mask_points = torch.empty(
+                (0,), dtype=torch.bool, device="cuda"
+            )
+
+            self.ply_input = BasicPointCloud(
+                points=np.empty((0, 3), dtype=np.float32),
+                colors=np.empty((0, 3), dtype=np.float32),
+                normals=np.empty((0, 3), dtype=np.float32),
+            )
+            return (
+                fused_point_cloud,
+                features,
+                scales,
+                rots,
+                opacities,
+                motion_mask_points,
             )
 
         # Keep on self
