@@ -1,0 +1,24 @@
+inherit_from: "configs/rgbd/bonn/config.yaml"
+
+Dataset:
+  dataset_path: "datasets/bonn/rgbd_bonn_moving_nonobstructing_box2"
+
+Training:
+  single_thread: true
+  dystart: 262
+
+Uncertainty:
+  # Same M5 source computation as weighted, but no mapping intervention.
+  enable_m1: true
+  shadow_mode: true
+  enable_m2a: false
+  enable_m2a2: false
+  m1_mapping_weighting: false
+  m3_jackknife_audit: false
+  m3b_flow_perturbation_audit: false
+  m3c_temporal_cycle_audit: false
+  m5_flow_reliability_enable: true
+  m5_mapping_weighting: false
+  m5_flow_reference_file: results/m5_direct_flow_reference.json
+  m5_confidence_eps: 1.0e-3
+  m5_min_pixels: 500
