@@ -14,9 +14,14 @@ right-composed convention as audit_m1_relative_pose_reliability.py.
 import argparse
 import csv
 import math
+import sys
 from pathlib import Path
 
 import torch
+
+REPO = Path(__file__).resolve().parents[1]
+if str(REPO) not in sys.path:
+    sys.path.insert(0, str(REPO))
 
 from utils.m2_uncertainty import SE3_log
 
