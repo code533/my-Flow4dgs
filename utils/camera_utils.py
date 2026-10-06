@@ -75,6 +75,13 @@ class Camera(nn.Module):
         self.m1_mapping_sigma_r = None
         self.m1_mapping_valid = False
 
+        # M5 direct-flow reliability mapping signal. Neutral until the
+        # explicitly enabled M5 shadow/runtime path computes a valid score.
+        self.m5_mapping_confidence = 1.0
+        self.m5_mapping_direct_flow_px = None
+        self.m5_mapping_ecdf = None
+        self.m5_mapping_valid = False
+
         self.original_image = color
         self.depth = depth
         self.depth_mask = np.isfinite(depth) & (depth > 0.0)
