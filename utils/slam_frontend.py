@@ -881,17 +881,38 @@ class FrontEnd(mp.Process):
                             lo, hi = self.m3c_frame_range
                             run_m3c = lo <= int(viewpoint.uid) <= hi
                         if run_m3c and int(viewpoint.uid) >= 2 * self.use_every_n_frames:
-                            prevprev = self.cameras[
+                            older_idx = (
                                 cur_frame_idx - 2 * self.use_every_n_frames
-                            ]
-                            flow_tm1_to_tm2 = prev.generate_flow(
+                            )
+                            # Flow4DGS aggressively cleans non-keyframe Camera
+                            # objects after use; at frame t, Camera(t-2) usually
+                            # still exists but its original_image is already
+                            # None. Reload the historical RGB through the
+                            # dataset so M3-C does not change baseline memory
+                            # lifetime or retain old frames solely for audit.
+                            older_sample = self.dataset[older_idx]
+                            older_image = older_sample[0]
+                            if older_image is None:
+                                raise RuntimeError(
+                                    f"M3-C could not reload RGB for frame "
+                                    f"{older_idx} from dataset"
+                                )
+                            older_image = older_image.to(
+                                device=viewpoint.original_image.device,
+                                dtype=viewpoint.original_image.dtype,
+                            )
+
+                            # Use the current Camera's already-loaded RAFT
+                            # model for both diagnostic calls. tracking=True
+                            # keeps both calls uncached.
+                            flow_tm1_to_tm2 = viewpoint.generate_flow(
                                 prev.original_image.cuda(),
-                                prevprev.original_image.cuda(),
+                                older_image,
                                 tracking=True,
                             )
                             flow_t_to_tm2 = viewpoint.generate_flow(
                                 viewpoint.original_image.cuda(),
-                                prevprev.original_image.cuda(),
+                                older_image,
                                 tracking=True,
                             )
                             flow_tm1_to_tm2_px = flow_to_pixels(
