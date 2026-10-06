@@ -1018,7 +1018,7 @@ class FrontEnd(mp.Process):
                                 save_dir=self.config["Results"]["save_dir"],
                             )
                         else:
-                            viewpoint.m5_mapping_confidence = 1.0
+                            viewpoint.m5_mapping_confidence = 0.5
                             viewpoint.m5_mapping_valid = False
 
                     # M1 Version 1 uses a deliberately simple depth-noise
