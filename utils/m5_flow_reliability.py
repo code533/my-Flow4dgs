@@ -153,7 +153,7 @@ class M5FlowReliability:
             "num_valid_pixels": n,
             "direct_flow_median_px": None,
             "training_ecdf": None,
-            "confidence": 1.0,
+            "confidence": 0.5,
         }
         if n < self.min_pixels:
             return out
