@@ -77,7 +77,7 @@ class Camera(nn.Module):
 
         # M5 direct-flow reliability mapping signal. Neutral until the
         # explicitly enabled M5 shadow/runtime path computes a valid score.
-        self.m5_mapping_confidence = 1.0
+        self.m5_mapping_confidence = 0.5
         self.m5_mapping_direct_flow_px = None
         self.m5_mapping_ecdf = None
         self.m5_mapping_valid = False
