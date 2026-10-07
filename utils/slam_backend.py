@@ -818,6 +818,25 @@ class BackEnd(mp.Process):
                 "M5-B insertion gating and M5-A mapping weighting "
                 "must not be enabled together"
             )
+        self.m5_soft_opacity = bool(
+            unc_cfg.get("m5_soft_opacity", False)
+        )
+        if self.m5_soft_opacity and self.m5_insertion_gating:
+            raise ValueError(
+                "M5-C soft opacity and M5-B insertion gating "
+                "must not be enabled together"
+            )
+        if self.m5_soft_opacity and self.m5_mapping_weighting:
+            raise ValueError(
+                "M5-C soft opacity and M5-A mapping weighting "
+                "must not be enabled together"
+            )
+        if self.m5_soft_opacity and not bool(
+            unc_cfg.get("m5_flow_reliability_enable", False)
+        ):
+            raise ValueError(
+                "m5_soft_opacity requires m5_flow_reliability_enable=true"
+            )
         self.m5_insertion_requests = 0
         self.m5_insertion_admitted = 0
         self.m5_insertion_rejected = 0
