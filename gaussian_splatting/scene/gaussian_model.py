@@ -9,6 +9,7 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 
+import csv
 import os
 
 import numpy as np
@@ -676,10 +677,72 @@ class GaussianModel:
 
         rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
         rots[:, 0] = 1
+
+        # M5-C: soften the initial trust of newly inserted Gaussians according
+        # to the already frozen direct-flow reliability confidence.  The
+        # baseline alpha=0.5 is preserved for initialization, dynamic-object
+        # initialization, invalid scores, and when M5-C is disabled.
+        alpha_init = 0.5
+        m5c_applied = False
+        unc_cfg = self.config.get("Uncertainty", {})
+        m5c_enable = bool(unc_cfg.get("m5_soft_opacity", False))
+        if m5c_enable and (not init) and (not add_dygs):
+            valid = bool(getattr(cam, "m5_mapping_valid", False))
+            conf = getattr(cam, "m5_mapping_confidence", None)
+            if (
+                valid
+                and conf is not None
+                and np.isfinite(float(conf))
+                and float(conf) > 0.0
+            ):
+                alpha_init = min(0.5, float(conf))
+                m5c_applied = True
+
         opacities = inverse_sigmoid(
-            0.5 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda")
+            alpha_init
+            * torch.ones(
+                (fused_point_cloud.shape[0], 1),
+                dtype=torch.float,
+                device="cuda",
+            )
         )
 
+        # Structured mechanism log.  One row per non-empty insertion call.
+        if self.config.get("Results", {}).get("save_dir") is not None:
+            path = os.path.join(
+                self.config["Results"]["save_dir"],
+                "m5c_opacity_initialization.csv",
+            )
+            exists = os.path.exists(path)
+            with open(path, "a", newline="") as fp:
+                writer = csv.writer(fp)
+                if not exists:
+                    writer.writerow(
+                        [
+                            "frame",
+                            "num_points",
+                            "init",
+                            "add_dygs",
+                            "m5_valid",
+                            "m5_confidence",
+                            "direct_flow_median_px",
+                            "alpha_init",
+                            "m5c_applied",
+                        ]
+                    )
+                writer.writerow(
+                    [
+                        int(getattr(cam, "uid", -1)),
+                        int(fused_point_cloud.shape[0]),
+                        int(bool(init)),
+                        int(bool(add_dygs)),
+                        int(bool(getattr(cam, "m5_mapping_valid", False))),
+                        getattr(cam, "m5_mapping_confidence", None),
+                        getattr(cam, "m5_mapping_direct_flow_px", None),
+                        float(alpha_init),
+                        int(bool(m5c_applied)),
+                    ]
+                )
 
         # ------------------------ visualization (optional) ------------------------
         if visualize and new_xyz.shape[0] > 0 and (new_mask is not None):
