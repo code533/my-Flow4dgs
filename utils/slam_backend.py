@@ -793,6 +793,34 @@ class BackEnd(mp.Process):
         self.m5_mapping_clip_max = float(unc_cfg.get("m5_mapping_clip_max", 4.0))
         self.m5_mapping_log_every = int(unc_cfg.get("m5_mapping_log_every", 50))
         self.m5_mapping_call_count = 0
+
+        # M5-B: reliability-aware Gaussian insertion admission.
+        self.m5_insertion_gating = bool(
+            unc_cfg.get("m5_insertion_gating", False)
+        )
+        self.m5_insertion_conf_threshold = float(
+            unc_cfg.get("m5_insertion_conf_threshold", 0.20)
+        )
+        if not (0.0 <= self.m5_insertion_conf_threshold <= 1.0):
+            raise ValueError(
+                "m5_insertion_conf_threshold must be in [0,1]"
+            )
+        if self.m5_insertion_gating and not bool(
+            unc_cfg.get("m5_flow_reliability_enable", False)
+        ):
+            raise ValueError(
+                "m5_insertion_gating requires "
+                "m5_flow_reliability_enable=true"
+            )
+        if self.m5_insertion_gating and self.m5_mapping_weighting:
+            raise ValueError(
+                "M5-B insertion gating and M5-A mapping weighting "
+                "must not be enabled together"
+            )
+        self.m5_insertion_requests = 0
+        self.m5_insertion_admitted = 0
+        self.m5_insertion_rejected = 0
+
         if self.m1_mapping_weighting and self.m5_mapping_weighting:
             raise ValueError(
                 "M1 and M5 mapping weighting cannot be enabled simultaneously"
@@ -869,6 +897,73 @@ class BackEnd(mp.Process):
             else False
         )
     
+    def m5_should_admit_gaussian_insertion(self, frame_idx, viewpoint, requested):
+        """Return whether an original Gaussian-insertion request is admitted.
+
+        M5-B never creates a new insertion request; it can only suppress an
+        optional request already made by the baseline frontend logic.
+        """
+        if not requested:
+            return False, "not_requested"
+
+        self.m5_insertion_requests += 1
+
+        # Mandatory initialization events are never gated.
+        if int(frame_idx) == 0:
+            self.m5_insertion_admitted += 1
+            return True, "init_frame"
+        if int(frame_idx) == int(self.dystart):
+            self.m5_insertion_admitted += 1
+            return True, "dystart"
+
+        if not self.m5_insertion_gating:
+            self.m5_insertion_admitted += 1
+            return True, "gating_off"
+
+        valid = bool(getattr(viewpoint, "m5_mapping_valid", False))
+        conf = getattr(viewpoint, "m5_mapping_confidence", None)
+        if (
+            (not valid)
+            or conf is None
+            or (not np.isfinite(float(conf)))
+        ):
+            self.m5_insertion_admitted += 1
+            return True, "invalid_score"
+
+        conf = float(conf)
+        if conf < self.m5_insertion_conf_threshold:
+            self.m5_insertion_rejected += 1
+            return False, "low_reliability"
+
+        self.m5_insertion_admitted += 1
+        return True, "reliable"
+
+    def m5_log_insertion_decision(
+        self, frame_idx, viewpoint, requested, admitted, reason
+    ):
+        if not requested:
+            return
+        valid = bool(getattr(viewpoint, "m5_mapping_valid", False))
+        conf = getattr(viewpoint, "m5_mapping_confidence", None)
+        direct = getattr(viewpoint, "m5_mapping_direct_flow_px", None)
+        ecdf = getattr(viewpoint, "m5_mapping_ecdf", None)
+        Log(
+            "M5-B insertion",
+            "frame", int(frame_idx),
+            "requested", bool(requested),
+            "admitted", bool(admitted),
+            "reason", reason,
+            "valid", valid,
+            "confidence", conf,
+            "ecdf", ecdf,
+            "direct_flow_px", direct,
+            "counts",
+            f"{self.m5_insertion_admitted}/"
+            f"{self.m5_insertion_rejected}/"
+            f"{self.m5_insertion_requests}",
+            tag="Backend",
+        )
+
     def fill_depth_holes_with_motion_nn_np(self, depth: np.ndarray,
                                        new_mask: np.ndarray,
                                        motion_mask: np.ndarray) -> np.ndarray:
@@ -2628,8 +2723,29 @@ class BackEnd(mp.Process):
                                 plt.close()
 
                             
-                    if add_new_gaussian:
-                        self.add_next_kf(cur_frame_idx, viewpoint, depth_map=depth_map, flow_back=flow_back, closest_frame=self.viewpoints[closest_keyframe])
+                    m5_admit_insertion, m5_admit_reason = (
+                        self.m5_should_admit_gaussian_insertion(
+                            cur_frame_idx,
+                            viewpoint,
+                            bool(add_new_gaussian),
+                        )
+                    )
+                    self.m5_log_insertion_decision(
+                        cur_frame_idx,
+                        viewpoint,
+                        bool(add_new_gaussian),
+                        bool(m5_admit_insertion),
+                        m5_admit_reason,
+                    )
+
+                    if add_new_gaussian and m5_admit_insertion:
+                        self.add_next_kf(
+                            cur_frame_idx,
+                            viewpoint,
+                            depth_map=depth_map,
+                            flow_back=flow_back,
+                            closest_frame=self.viewpoints[closest_keyframe],
+                        )
                     
                     if self.dystart==cur_frame_idx:
                         self.initialize_map(cur_frame_idx, viewpoint)
