@@ -1,3 +1,4 @@
+import csv
 import random
 import time
 from utils.m1_mapping_uncertainty import normalized_window_weights
@@ -963,6 +964,46 @@ class BackEnd(mp.Process):
             f"{self.m5_insertion_requests}",
             tag="Backend",
         )
+
+        # Structured per-request audit for later mechanism analysis.
+        if self.save_dir is not None:
+            path = os.path.join(
+                self.save_dir, "m5b_insertion_decisions.csv"
+            )
+            exists = os.path.exists(path)
+            with open(path, "a", newline="") as f:
+                writer = csv.writer(f)
+                if not exists:
+                    writer.writerow(
+                        [
+                            "frame",
+                            "requested",
+                            "admitted",
+                            "reason",
+                            "m5_valid",
+                            "confidence",
+                            "training_ecdf",
+                            "direct_flow_median_px",
+                            "admitted_count",
+                            "rejected_count",
+                            "request_count",
+                        ]
+                    )
+                writer.writerow(
+                    [
+                        int(frame_idx),
+                        int(bool(requested)),
+                        int(bool(admitted)),
+                        reason,
+                        int(valid),
+                        "" if conf is None else float(conf),
+                        "" if ecdf is None else float(ecdf),
+                        "" if direct is None else float(direct),
+                        int(self.m5_insertion_admitted),
+                        int(self.m5_insertion_rejected),
+                        int(self.m5_insertion_requests),
+                    ]
+                )
 
     def fill_depth_holes_with_motion_nn_np(self, depth: np.ndarray,
                                        new_mask: np.ndarray,
