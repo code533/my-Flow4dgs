@@ -369,7 +369,14 @@ class GaussianModel:
             )
             depth[static_mask] = 0
             depth = o3d.geometry.Image(depth.astype(np.float32))
-        return self.create_pcd_from_image_and_depth(cam, rgb, depth, init, new_mask=new_mask)
+        return self.create_pcd_from_image_and_depth(
+            cam,
+            rgb,
+            depth,
+            init,
+            new_mask=new_mask,
+            add_dygs=add_dygs,
+        )
 
 
     def create_pcd_from_image_and_depth(
@@ -379,6 +386,7 @@ class GaussianModel:
         depth,          # open3d.geometry.Image (float32 or uint16 per your pipeline)
         init=False,
         new_mask=None,  # [H, W] bool/uint8/float (prob) motion mask in image space
+        add_dygs=False,
         visualize=False, # if True, return an overlay image (RGB) with projected points
         vis_point_radius=2,
         vis_alpha=0.7,
