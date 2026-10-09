@@ -1,0 +1,42 @@
+inherit_from: "configs/rgbd/bonn/config.yaml"
+
+Dataset:
+  dataset_path: "datasets/bonn/rgbd_bonn_balloon2"
+
+Training:
+  single_thread: true
+  dystart: 43
+
+Uncertainty:
+  enable_m1: true
+  shadow_mode: true
+
+  enable_m2a: false
+  m2a_use_diag_calibration: false
+  m2a_diag_calibration: null
+  m2a_diag_calibration_file: null
+  m2a_diag_calibration_fold: null
+
+  enable_m2a2: false
+  m2a2_use_diag_calibration: false
+  m2a2_diag_calibration: null
+  m2a2_diag_calibration_file: null
+  m2a2_diag_calibration_fold: null
+
+  m1_mapping_weighting: false
+  m3_jackknife_audit: false
+  m3b_flow_perturbation_audit: false
+  m3c_temporal_cycle_audit: false
+
+  m5_flow_reliability_enable: true
+  m5_flow_reference_file: results/m5_direct_flow_reference.json
+  m5_confidence_eps: 1.0e-3
+  m5_min_pixels: 500
+
+  m5_mapping_weighting: false
+  m5_insertion_gating: false
+  m5_soft_opacity: false
+
+  m6b_pose_trust_region: true
+  m6b_conf_threshold: 0.20
+  m6b_correction_scale: 0.50
