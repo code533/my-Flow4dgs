@@ -11,7 +11,16 @@ Uncertainty:
   enable_m1: true
   shadow_mode: true
   enable_m2a: false
+  m2a_use_diag_calibration: false
+  m2a_diag_calibration: null
+  m2a_diag_calibration_file: null
+  m2a_diag_calibration_fold: null
+
   enable_m2a2: false
+  m2a2_use_diag_calibration: false
+  m2a2_diag_calibration: null
+  m2a2_diag_calibration_file: null
+  m2a2_diag_calibration_fold: null
   m1_mapping_weighting: false
   m3_jackknife_audit: false
   m3b_flow_perturbation_audit: false
