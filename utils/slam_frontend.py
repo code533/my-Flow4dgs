@@ -1,3 +1,4 @@
+import csv
 import time
 
 import numpy as np
@@ -12,7 +13,7 @@ from utils.eval_utils import eval_ate, save_gaussians
 from utils.logging_utils import Log
 from utils.reproducibility import seed_everything
 from utils.multiprocessing_utils import clone_obj
-from utils.pose_utils import update_pose
+from utils.pose_utils import update_pose, scale_se3_step
 from utils.slam_utils import get_loss_tracking, get_median_depth, get_loss_network, pearson_loss
 from gaussian_splatting.utils.loss_utils import l1_loss, ssim
 import os
@@ -398,6 +399,26 @@ class FrontEnd(mp.Process):
                 eps=float(unc_cfg.get("m5_confidence_eps", 1.0e-3)),
                 min_pixels=int(unc_cfg.get("m5_min_pixels", 500)),
             )
+
+        # M6-B: conservative trust region on the photometric tracking
+        # correction, not on the physical inter-frame camera motion.
+        self.m6b_pose_trust_region = bool(
+            unc_cfg.get("m6b_pose_trust_region", False)
+        )
+        self.m6b_conf_threshold = float(
+            unc_cfg.get("m6b_conf_threshold", 0.20)
+        )
+        self.m6b_correction_scale = float(
+            unc_cfg.get("m6b_correction_scale", 0.50)
+        )
+        if self.m6b_pose_trust_region and not self.m5_flow_reliability_enable:
+            raise ValueError(
+                "m6b_pose_trust_region requires m5_flow_reliability_enable=true"
+            )
+        if not (0.0 <= self.m6b_conf_threshold <= 1.0):
+            raise ValueError("m6b_conf_threshold must be in [0,1]")
+        if not (0.0 < self.m6b_correction_scale <= 1.0):
+            raise ValueError("m6b_correction_scale must be in (0,1]")
 
         # M2-A: shadow-only propagation of absolute camera-pose uncertainty.
         # It does not alter the baseline pose mean, losses, keyframes, mapping,
@@ -1383,6 +1404,11 @@ class FrontEnd(mp.Process):
 
         loss_tracking_init = 0.0
 
+        # M6-B reference pose: the exact pose handed to baseline photometric
+        # tracking after all existing flow/motion initialization logic.
+        m6b_R_init = viewpoint.R.detach().clone()
+        m6b_T_init = viewpoint.T.detach().clone()
+
         for tracking_itr in range(self.tracking_itr_num):
             render_pkg = render(
                 viewpoint, self.gaussians, self.pipeline_params, self.background, dynamic=False, dx=dxyz, ds=d_scale, dr=d_rot, mask=(self.gaussians.dygs==False),)
@@ -1429,6 +1455,111 @@ class FrontEnd(mp.Process):
 
             if converged:
                 break
+
+        # M6-B applies a trust region only to the correction introduced by
+        # photometric tracking:
+        #     T_corr = T_tracked @ inv(T_init)
+        #     T_final = scale(T_corr, s) @ T_init
+        # This deliberately does NOT shrink the physical inter-frame motion.
+        m6b_valid = bool(getattr(viewpoint, "m5_mapping_valid", False))
+        m6b_conf = float(getattr(viewpoint, "m5_mapping_confidence", 0.5))
+        m6b_trigger = (
+            self.m6b_pose_trust_region
+            and m6b_valid
+            and np.isfinite(m6b_conf)
+            and m6b_conf < self.m6b_conf_threshold
+        )
+
+        T_m6b_init = torch.eye(
+            4, device=m6b_R_init.device, dtype=m6b_R_init.dtype
+        )
+        T_m6b_init[:3, :3] = m6b_R_init
+        T_m6b_init[:3, 3] = m6b_T_init
+
+        T_m6b_tracked = torch.eye(
+            4, device=viewpoint.R.device, dtype=viewpoint.R.dtype
+        )
+        T_m6b_tracked[:3, :3] = viewpoint.R
+        T_m6b_tracked[:3, 3] = viewpoint.T
+
+        T_corr = T_m6b_tracked @ torch.linalg.inv(T_m6b_init)
+        corr_t_before = float(torch.norm(T_corr[:3, 3]).detach().cpu())
+        corr_R = T_corr[:3, :3]
+        corr_cos = torch.clamp(
+            (torch.trace(corr_R) - 1.0) / 2.0, -1.0, 1.0
+        )
+        corr_r_before = float(torch.acos(corr_cos).detach().cpu())
+
+        applied_scale = 1.0
+        if m6b_trigger:
+            applied_scale = self.m6b_correction_scale
+            T_corr_scaled = scale_se3_step(T_corr, applied_scale)
+            T_final = T_corr_scaled @ T_m6b_init
+            viewpoint.update_RT(
+                T_final[:3, :3].detach().clone(),
+                T_final[:3, 3].detach().clone(),
+            )
+
+        T_after = torch.eye(
+            4, device=viewpoint.R.device, dtype=viewpoint.R.dtype
+        )
+        T_after[:3, :3] = viewpoint.R
+        T_after[:3, 3] = viewpoint.T
+        T_corr_after = T_after @ torch.linalg.inv(T_m6b_init)
+        corr_t_after = float(
+            torch.norm(T_corr_after[:3, 3]).detach().cpu()
+        )
+        corr_R_after = T_corr_after[:3, :3]
+        corr_cos_after = torch.clamp(
+            (torch.trace(corr_R_after) - 1.0) / 2.0, -1.0, 1.0
+        )
+        corr_r_after = float(torch.acos(corr_cos_after).detach().cpu())
+
+        if self.m5_flow_reliability_enable:
+            audit_path = os.path.join(
+                self.config["Results"]["save_dir"],
+                "m6b_pose_trust_region.csv",
+            )
+            exists = os.path.exists(audit_path)
+            with open(audit_path, "a", newline="") as fp:
+                writer = csv.writer(fp)
+                if not exists:
+                    writer.writerow(
+                        [
+                            "frame",
+                            "m5_valid",
+                            "confidence",
+                            "triggered",
+                            "applied_scale",
+                            "corr_t_before_m",
+                            "corr_t_after_m",
+                            "corr_r_before_rad",
+                            "corr_r_after_rad",
+                        ]
+                    )
+                writer.writerow(
+                    [
+                        int(viewpoint.uid),
+                        int(m6b_valid),
+                        m6b_conf,
+                        int(m6b_trigger),
+                        applied_scale,
+                        corr_t_before,
+                        corr_t_after,
+                        corr_r_before,
+                        corr_r_after,
+                    ]
+                )
+
+        if m6b_trigger:
+            Log(
+                "M6-B trust frame", viewpoint.uid,
+                "confidence", m6b_conf,
+                "scale", applied_scale,
+                "corr_t", corr_t_before, "->", corr_t_after,
+                "corr_r", corr_r_before, "->", corr_r_after,
+                tag="Frontend",
+            )
 
         self.median_depth = get_median_depth(depth, opacity)
 
