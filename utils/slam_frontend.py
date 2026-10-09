@@ -1,3 +1,4 @@
+import csv
 import time
 
 import numpy as np
@@ -398,6 +399,25 @@ class FrontEnd(mp.Process):
                 eps=float(unc_cfg.get("m5_confidence_eps", 1.0e-3)),
                 min_pixels=int(unc_cfg.get("m5_min_pixels", 500)),
             )
+
+        # M6-A: reliability-triggered extra pose-only refinement.
+        self.m6a_pose_refinement = bool(
+            unc_cfg.get("m6a_pose_refinement", False)
+        )
+        self.m6a_conf_threshold = float(
+            unc_cfg.get("m6a_conf_threshold", 0.20)
+        )
+        self.m6a_extra_iters = int(
+            unc_cfg.get("m6a_extra_iters", 20)
+        )
+        if self.m6a_pose_refinement and not self.m5_flow_reliability_enable:
+            raise ValueError(
+                "m6a_pose_refinement requires m5_flow_reliability_enable=true"
+            )
+        if not (0.0 <= self.m6a_conf_threshold <= 1.0):
+            raise ValueError("m6a_conf_threshold must be in [0,1]")
+        if self.m6a_extra_iters < 1:
+            raise ValueError("m6a_extra_iters must be >= 1")
 
         # M2-A: shadow-only propagation of absolute camera-pose uncertainty.
         # It does not alter the baseline pose mean, losses, keyframes, mapping,
@@ -1429,6 +1449,122 @@ class FrontEnd(mp.Process):
 
             if converged:
                 break
+
+        # M6-A: after the unmodified baseline photometric tracking loop,
+        # spend fixed extra pose-only effort on frames predicted unreliable by
+        # the frozen direct-flow cue.  Exposure is frozen in this extra stage.
+        m6_valid = bool(getattr(viewpoint, "m5_mapping_valid", False))
+        m6_conf = float(getattr(viewpoint, "m5_mapping_confidence", 0.5))
+        m6_trigger = (
+            self.m6a_pose_refinement
+            and m6_valid
+            and np.isfinite(m6_conf)
+            and m6_conf < self.m6a_conf_threshold
+        )
+
+        extra_done = 0
+        extra_delta_t_m = 0.0
+        extra_delta_r_rad = 0.0
+
+        if m6_trigger:
+            R_before = viewpoint.R.detach().clone()
+            T_before = viewpoint.T.detach().clone()
+
+            for _ in range(self.m6a_extra_iters):
+                render_pkg_extra = render(
+                    viewpoint,
+                    self.gaussians,
+                    self.pipeline_params,
+                    self.background,
+                    dynamic=False,
+                    dx=dxyz,
+                    ds=d_scale,
+                    dr=d_rot,
+                    mask=(self.gaussians.dygs == False),
+                )
+                image_extra = render_pkg_extra["render"]
+                depth_extra = render_pkg_extra["depth"]
+                opacity_extra = render_pkg_extra["opacity"]
+
+                loss_extra = get_loss_tracking(
+                    self.config,
+                    image_extra,
+                    depth_extra,
+                    opacity_extra,
+                    viewpoint,
+                    rm_dynamic=True,
+                    mask=mask,
+                    save_img=False,
+                )
+                loss_extra.backward()
+
+                # Pose-only refinement: do not update exposure in this stage.
+                viewpoint.exposure_a.grad = None
+                viewpoint.exposure_b.grad = None
+
+                with torch.no_grad():
+                    pose_optimizer.step()
+                    pose_optimizer.zero_grad()
+                    if self.gaussians.init_deform == 'mlp':
+                        self.gaussians.deform.optimizer.zero_grad(set_to_none=True)
+                    self.gaussians.optimizer.zero_grad(set_to_none=True)
+                    update_pose(viewpoint)
+
+                extra_done += 1
+
+            with torch.no_grad():
+                extra_delta_t_m = float(
+                    torch.norm(viewpoint.T - T_before).detach().cpu()
+                )
+                delta_R = viewpoint.R @ R_before.transpose(0, 1)
+                tr = torch.clamp(
+                    (torch.trace(delta_R) - 1.0) / 2.0,
+                    -1.0,
+                    1.0,
+                )
+                extra_delta_r_rad = float(torch.acos(tr).detach().cpu())
+
+        if self.m5_flow_reliability_enable:
+            audit_path = os.path.join(
+                self.config["Results"]["save_dir"],
+                "m6a_pose_refinement.csv",
+            )
+            exists = os.path.exists(audit_path)
+            with open(audit_path, "a", newline="") as fp:
+                writer = csv.writer(fp)
+                if not exists:
+                    writer.writerow(
+                        [
+                            "frame",
+                            "m5_valid",
+                            "confidence",
+                            "triggered",
+                            "extra_iters",
+                            "extra_delta_t_m",
+                            "extra_delta_r_rad",
+                        ]
+                    )
+                writer.writerow(
+                    [
+                        int(viewpoint.uid),
+                        int(m6_valid),
+                        m6_conf,
+                        int(m6_trigger),
+                        int(extra_done),
+                        extra_delta_t_m,
+                        extra_delta_r_rad,
+                    ]
+                )
+
+        if m6_trigger:
+            Log(
+                "M6-A refine frame", viewpoint.uid,
+                "confidence", m6_conf,
+                "extra_iters", extra_done,
+                "delta_t_m", extra_delta_t_m,
+                "delta_r_rad", extra_delta_r_rad,
+                tag="Frontend",
+            )
 
         self.median_depth = get_median_depth(depth, opacity)
 
